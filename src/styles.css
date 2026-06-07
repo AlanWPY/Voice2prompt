@@ -470,6 +470,109 @@ select {
   color: #405047;
 }
 
+.compact-hero {
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 160px;
+  align-items: center;
+  padding: 24px;
+}
+
+.compact-hero h1 {
+  max-width: none;
+  margin-top: 12px;
+  font-size: clamp(2rem, 4vw, 3.6rem);
+  line-height: 1.04;
+}
+
+.compact-hero p {
+  margin-top: 12px;
+  font-size: 1rem;
+}
+
+.hero-tools {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.focused-workspace {
+  grid-template-columns: minmax(360px, 0.9fr) minmax(0, 1.1fr);
+}
+
+.focused-workspace .voice-panel {
+  align-self: start;
+}
+
+.generate-btn {
+  width: 100%;
+  margin-top: 16px;
+}
+
+.compact-upload {
+  min-height: 104px;
+  margin-top: 16px;
+  padding: 14px;
+}
+
+.compact-list {
+  max-height: 150px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.inline-toolbar {
+  margin-top: 0;
+}
+
+.output-panel {
+  min-height: 0;
+}
+
+.focused-workspace .prompt-output {
+  min-height: 560px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(13, 22, 16, 0.42);
+  backdrop-filter: blur(6px);
+}
+
+.modal-panel {
+  width: min(760px, 100%);
+  max-height: min(760px, calc(100vh - 40px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  box-shadow: 0 24px 80px rgba(10, 24, 16, 0.28);
+  padding: 20px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.modal-head .panel-title {
+  margin-bottom: 0;
+}
+
+.help-steps {
+  display: grid;
+  gap: 12px;
+  color: #405047;
+  line-height: 1.75;
+}
+
 .spin {
   animation: spin 0.8s linear infinite;
 }
@@ -488,6 +591,10 @@ select {
   .hero,
   .workspace {
     grid-template-columns: 1fr;
+  }
+
+  .hero-tools {
+    justify-content: flex-start;
   }
 
   .hero {
@@ -527,7 +634,8 @@ select {
 
   .output-actions,
   .mic-actions,
-  .result-toolbar {
+  .result-toolbar,
+  .hero-tools {
     display: grid;
     grid-template-columns: 1fr;
   }
@@ -540,5 +648,28 @@ select {
 
   .prompt-output {
     min-height: 360px;
+  }
+
+  .focused-workspace .prompt-output {
+    min-height: 420px;
+  }
+
+  .status-strip {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    line-height: 1.6;
+  }
+
+  .status-strip .divider {
+    display: none;
+  }
+
+  .modal-backdrop {
+    padding: 10px;
+  }
+
+  .modal-panel {
+    max-height: calc(100vh - 20px);
+    padding: 16px;
   }
 }
