@@ -359,6 +359,7 @@ export default function App() {
   const [speechSupported, setSpeechSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicrophoneId, setSelectedMicrophoneId] = useState('');
   const [micStatus, setMicStatus] = useState('等待检测麦克风');
   const [transcript, setTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
@@ -428,6 +429,10 @@ export default function App() {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const audioInputs = devices.filter((device) => device.kind === 'audioinput');
       setMicrophones(audioInputs);
+      setSelectedMicrophoneId((current) => {
+        if (current && audioInputs.some((device) => device.deviceId === current)) return current;
+        return audioInputs[0]?.deviceId ?? '';
+      });
       setMicStatus(audioInputs.length > 0 ? `已检测到 ${audioInputs.length} 个麦克风` : '未发现可用麦克风');
     } catch (error) {
       setMicStatus(error instanceof Error ? `麦克风不可用：${error.message}` : '麦克风权限被拒绝');
@@ -437,7 +442,14 @@ export default function App() {
   async function startListening() {
     if (typeof navigator.mediaDevices?.getUserMedia === 'function' && 'MediaRecorder' in window && apiKey) {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const selectedDevice = microphones.find((device) => device.deviceId === selectedMicrophoneId);
+        const audioConstraints: MediaTrackConstraints = {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          ...(selectedMicrophoneId ? { deviceId: { exact: selectedMicrophoneId } } : {})
+        };
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
         const preferredMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
           ? 'audio/webm;codecs=opus'
           : MediaRecorder.isTypeSupported('audio/mp4')
@@ -476,10 +488,10 @@ export default function App() {
           }
         };
 
-        recorder.start();
+        recorder.start(1000);
         setIsListening(true);
         setInterimTranscript(`正在录音，停止后由 ${siliconFlowAsrModel} 转写`);
-        setStatus('正在录音');
+        setStatus(`正在录音：${selectedDevice?.label || '默认麦克风'}`);
         return;
       } catch (error) {
         setStatus(error instanceof Error ? `云端录音启动失败，尝试浏览器识别：${error.message}` : '云端录音启动失败，尝试浏览器识别');
@@ -536,6 +548,11 @@ export default function App() {
 
   function stopListening() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.requestData();
+      } catch {
+        // Some browsers throw if no data is ready; stop() will still flush what it has.
+      }
       mediaRecorderRef.current.stop();
       setStatus('录音已停止，正在准备转写');
       return;
@@ -618,10 +635,8 @@ export default function App() {
             <Sparkles size={16} />
             Voice2Prompt
           </span>
-          <h1>把一句中文口述，整理成真正可执行的 AI 提示词。</h1>
-          <p>
-            录音、粘贴需求或上传附件后，系统会把目标、步骤、输出格式、模型建议和质量标准整理成一段可复制的 prompt。
-          </p>
+          <h1>语音转提示词工具</h1>
+          <p>面向学习、办公和创作场景，将语音需求、文字补充和附件信息整理为可执行的 AI Prompt。</p>
         </div>
         <div className="status-strip">
           <span className={speechSupported ? 'dot ok' : 'dot warn'} />
@@ -650,7 +665,7 @@ export default function App() {
                 onClick={isListening ? stopListening : startListening}
               >
                 {isListening ? <Square size={17} /> : <Play size={17} />}
-                {isListening ? '停止识别' : '开始录音'}
+                {isListening ? '停止录音' : '开始录音'}
               </button>
             </div>
 
@@ -660,11 +675,24 @@ export default function App() {
             </div>
 
             {microphones.length > 0 && (
-              <div className="device-list">
-                {microphones.map((device, index) => (
-                  <span key={device.deviceId || index}>{device.label || `麦克风 ${index + 1}`}</span>
-                ))}
-              </div>
+              <label className="field-label" htmlFor="microphone-select">
+                输入设备
+                <select
+                  id="microphone-select"
+                  value={selectedMicrophoneId}
+                  onChange={(event) => {
+                    setSelectedMicrophoneId(event.target.value);
+                    const selected = microphones.find((device) => device.deviceId === event.target.value);
+                    setMicStatus(`已选择：${selected?.label || '默认麦克风'}`);
+                  }}
+                >
+                  {microphones.map((device, index) => (
+                    <option key={device.deviceId || index} value={device.deviceId}>
+                      {device.label || `麦克风 ${index + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
             )}
 
             <label className="field-label" htmlFor="transcript">

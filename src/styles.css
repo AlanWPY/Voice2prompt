@@ -32,6 +32,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -255,6 +256,7 @@ h1 {
 }
 
 textarea,
+select,
 input {
   width: 100%;
   border: 1px solid #cdd7cf;
@@ -267,6 +269,7 @@ input {
 }
 
 textarea:focus,
+select:focus,
 input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 4px rgba(14, 124, 97, 0.12);
@@ -282,6 +285,12 @@ textarea {
 input {
   min-height: 42px;
   padding: 0 12px;
+}
+
+select {
+  min-height: 42px;
+  padding: 0 12px;
+  color: var(--ink);
 }
 
 .small-textarea {
