@@ -3,6 +3,7 @@ dist/
 test-results/
 playwright-report/
 preview.log
+stt-test.wav
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts

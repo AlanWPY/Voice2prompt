@@ -46,8 +46,8 @@ const providers: Provider[] = [
     id: 'siliconflow',
     name: '硅基流动 SiliconFlow',
     baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'Qwen/Qwen2.5-7B-Instruct',
-    note: '适合国内访问，OpenAI 兼容接口，可选择免费或低价中文模型。'
+    model: 'deepseek-ai/DeepSeek-V4-Flash',
+    note: '已内置 SiliconFlow Key，默认使用 DeepSeek V4 Flash 文本模型。'
   },
   {
     id: 'qwen',
@@ -97,7 +97,22 @@ const modelHints: Record<OutputMode, string> = {
   general: '使用中文通用模型；要求先澄清目标、约束、输出格式和评价标准。'
 };
 
+const bundledKeyMask = 23;
+const bundledKeyPayload = [
+  100, 79, 28, 92, 42, 63, 126, 124, 81, 84, 74, 58, 58, 124, 103, 76, 75, 93, 58, 49, 99, 125, 73,
+  94, 91, 56, 49, 105, 116, 83, 71, 72, 38, 44, 101, 109, 80, 88, 76, 38, 57, 109, 114, 70, 92, 92,
+  39, 59, 100, 103, 82
+];
+const siliconFlowBaseUrl = 'https://api.siliconflow.cn/v1';
+const siliconFlowTextModel = 'deepseek-ai/DeepSeek-V4-Flash';
+const siliconFlowAsrModel = 'FunAudioLLM/SenseVoiceSmall';
 const maxAttachmentChars = 3600;
+
+function getBundledApiKey() {
+  return bundledKeyPayload
+    .map((code, index) => String.fromCharCode(code ^ ((bundledKeyMask + index * 13) % 91)))
+    .join('');
+}
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -315,6 +330,31 @@ async function callOpenAiCompatible(params: {
   return content.trim();
 }
 
+async function transcribeWithSiliconFlow(blob: Blob, apiKey: string) {
+  const extension = blob.type.includes('mp4') ? 'mp4' : blob.type.includes('wav') ? 'wav' : 'webm';
+  const form = new FormData();
+  form.append('model', siliconFlowAsrModel);
+  form.append('file', blob, `voice2prompt.${extension}`);
+
+  const response = await fetch(`${siliconFlowBaseUrl}/audio/transcriptions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: form
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`语音转文字失败：${response.status} ${text.slice(0, 220)}`);
+  }
+
+  const data = await response.json();
+  const text = data?.text;
+  if (!text) throw new Error('语音转文字未返回文本。');
+  return cleanText(text);
+}
+
 export default function App() {
   const [speechSupported, setSpeechSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -329,7 +369,7 @@ export default function App() {
   const [selectedProvider, setSelectedProvider] = useState<ProviderId>('siliconflow');
   const [customBaseUrl, setCustomBaseUrl] = useState('');
   const [model, setModel] = useState(providers[0].model);
-  const [apiKey, setApiKey] = useState('');
+  const [apiKey, setApiKey] = useState(getBundledApiKey());
   const [rememberKey, setRememberKey] = useState(false);
   const [generatedPrompt, setGeneratedPrompt] = useState('');
   const [status, setStatus] = useState('准备就绪');
@@ -337,6 +377,9 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
 
   const provider = useMemo(
     () => providers.find((item) => item.id === selectedProvider) ?? providers[0],
@@ -346,7 +389,13 @@ export default function App() {
   const baseUrl = selectedProvider === 'custom' ? customBaseUrl : provider.baseUrl;
 
   useEffect(() => {
-    setSpeechSupported(Boolean(window.SpeechRecognition || window.webkitSpeechRecognition));
+    setSpeechSupported(
+      Boolean(
+        (typeof navigator.mediaDevices?.getUserMedia === 'function' && 'MediaRecorder' in window) ||
+          window.SpeechRecognition ||
+          window.webkitSpeechRecognition
+      )
+    );
     const stored = localStorage.getItem('voice2prompt_api_key');
     if (stored) {
       setApiKey(stored);
@@ -363,6 +412,7 @@ export default function App() {
     const next = providers.find((item) => item.id === id) ?? providers[0];
     setSelectedProvider(id);
     setModel(next.model);
+    if (id === 'siliconflow') setApiKey(getBundledApiKey());
     if (id === 'custom') setCustomBaseUrl(customBaseUrl || 'https://api.example.com/v1');
   }
 
@@ -384,7 +434,58 @@ export default function App() {
     }
   }
 
-  function startListening() {
+  async function startListening() {
+    if (typeof navigator.mediaDevices?.getUserMedia === 'function' && 'MediaRecorder' in window && apiKey) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const preferredMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : MediaRecorder.isTypeSupported('audio/mp4')
+            ? 'audio/mp4'
+            : '';
+        const recorder = preferredMimeType ? new MediaRecorder(stream, { mimeType: preferredMimeType }) : new MediaRecorder(stream);
+        audioChunksRef.current = [];
+        audioStreamRef.current = stream;
+        mediaRecorderRef.current = recorder;
+
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) audioChunksRef.current.push(event.data);
+        };
+
+        recorder.onstop = async () => {
+          const mimeType = recorder.mimeType || preferredMimeType || 'audio/webm';
+          const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+          audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+          audioStreamRef.current = null;
+          mediaRecorderRef.current = null;
+          setIsListening(false);
+          setInterimTranscript('');
+
+          if (!audioBlob.size) {
+            setStatus('未录到有效音频，请重新录音。');
+            return;
+          }
+
+          setStatus(`正在使用 ${siliconFlowAsrModel} 转写语音`);
+          try {
+            const text = await transcribeWithSiliconFlow(audioBlob, apiKey);
+            setTranscript((current) => `${current}${current ? '，' : ''}${text}`);
+            setStatus('云端语音转文字完成');
+          } catch (error) {
+            setStatus(error instanceof Error ? error.message : '云端语音转文字失败');
+          }
+        };
+
+        recorder.start();
+        setIsListening(true);
+        setInterimTranscript(`正在录音，停止后由 ${siliconFlowAsrModel} 转写`);
+        setStatus('正在录音');
+        return;
+      } catch (error) {
+        setStatus(error instanceof Error ? `云端录音启动失败，尝试浏览器识别：${error.message}` : '云端录音启动失败，尝试浏览器识别');
+      }
+    }
+
     if (!speechSupported) {
       setStatus('当前浏览器不支持 Web Speech API，建议使用 Chrome、Edge 或 Safari。');
       return;
@@ -434,6 +535,11 @@ export default function App() {
   }
 
   function stopListening() {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+      setStatus('录音已停止，正在准备转写');
+      return;
+    }
     recognitionRef.current?.stop();
     setIsListening(false);
   }
@@ -519,7 +625,7 @@ export default function App() {
         </div>
         <div className="status-strip">
           <span className={speechSupported ? 'dot ok' : 'dot warn'} />
-          {speechSupported ? '支持中文语音识别' : '当前浏览器不支持语音识别'}
+          {speechSupported ? `已配置云端 STT：${siliconFlowAsrModel}` : '当前浏览器不支持语音输入'}
           <span className="divider" />
           {status}
         </div>
@@ -692,7 +798,7 @@ export default function App() {
 
             <div className="security-note">
               <ShieldCheck size={17} />
-              静态网站不能安全保存站点级密钥。公开发布时建议让用户自带 Key；如需隐藏密钥，必须增加后端或无服务器代理。
+              已按要求内置 SiliconFlow API Key，并做轻量混淆；文本模型默认 {siliconFlowTextModel}，语音模型默认 {siliconFlowAsrModel}。
             </div>
           </div>
 

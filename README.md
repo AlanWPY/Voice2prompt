@@ -22,12 +22,12 @@ GitHub Pages 这类静态站会把所有前端代码公开给访问者。任何�
 
 页面已预设以下 OpenAI 兼容接口：
 
-- SiliconFlow：`https://api.siliconflow.cn/v1`，默认模型 `Qwen/Qwen2.5-7B-Instruct`。官方文档说明 Qwen2.5（7B）等多个大模型 API 可免费使用；具体免费模型、限速和价格请以模型广场为准。
+- SiliconFlow：`https://api.siliconflow.cn/v1`，默认模型 `deepseek-ai/DeepSeek-V4-Flash`。项目已按需求内置并轻量混淆 SiliconFlow API Key；语音转文字默认使用 `FunAudioLLM/SenseVoiceSmall`。
 - 阿里云百炼 Qwen：`https://dashscope.aliyuncs.com/compatible-mode/v1`，默认模型 `qwen-plus`。百炼文档提供 OpenAI 兼容 Chat Completions，并在控制台 API Key 页面创建密钥。
 - 智谱 BigModel GLM：`https://open.bigmodel.cn/api/paas/v4`，默认模型 `glm-4-flash-250414`。智谱文档说明 `GLM-4-Flash-250414` 是免费文本模型；价格、限速和额度请以控制台为准。
 - DeepSeek：`https://api.deepseek.com`，默认模型 `deepseek-v4-flash`。官方 API 价格页显示按量计费，适合作为低成本高质量选项。
 
-静态站直连 API 时还取决于模型服务是否允许浏览器 CORS 请求。如果某个平台阻止跨域请求，需要使用自定义 Base URL 指向你自己的 Cloudflare Workers、Vercel Functions 或其他代理服务。
+静态站直连 API 时还取决于模型服务是否允许浏览器 CORS 请求。当前已用浏览器内 fetch 验证 SiliconFlow 文本接口和语音转文字接口可用。如果某个平台阻止跨域请求，需要使用自定义 Base URL 指向你自己的 Cloudflare Workers、Vercel Functions 或其他代理服务。
 
 ## API Key 获取方式
 
