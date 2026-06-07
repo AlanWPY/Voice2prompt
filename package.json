@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test:smoke": "playwright test"
+    "test:smoke": "playwright test",
+    "publish:github": "powershell -ExecutionPolicy Bypass -File scripts/publish-github.ps1"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.2",
