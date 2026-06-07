@@ -1,0 +1,12 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+preview.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.DS_Store
+.env
+.env.*
+!.env.example
