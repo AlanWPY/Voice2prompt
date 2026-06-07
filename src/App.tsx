@@ -6,15 +6,16 @@ import {
   Copy,
   Download,
   FileText,
+  HelpCircle,
   KeyRound,
   Loader2,
   Mic,
   Mic2,
   Paperclip,
   Play,
-  RefreshCcw,
   Settings2,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Wand2,
@@ -23,6 +24,7 @@ import {
 
 type ProviderId = 'siliconflow' | 'qwen' | 'zhipu' | 'deepseek' | 'custom';
 type OutputMode = 'assignment' | 'research' | 'coding' | 'writing' | 'analysis' | 'general';
+type DialogView = 'settings' | 'help' | null;
 
 type Provider = {
   id: ProviderId;
@@ -330,6 +332,94 @@ async function callOpenAiCompatible(params: {
   return content.trim();
 }
 
+async function streamOpenAiCompatible(params: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  prompt: string;
+  signal: AbortSignal;
+  onDelta: (delta: string) => void;
+}) {
+  const endpoint = `${params.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    signal: params.signal,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${params.apiKey}`
+    },
+    body: JSON.stringify({
+      model: params.model,
+      temperature: 0.35,
+      max_tokens: 2200,
+      ...(params.baseUrl.includes('siliconflow.cn') && params.model === siliconFlowTextModel ? { enable_thinking: false } : {}),
+      stream: true,
+      messages: [
+        {
+          role: 'system',
+          content:
+            '你是资深提示词工程师，擅长把中文口语需求、附件描述和隐含约束改写为可执行的高质量 prompt。'
+        },
+        {
+          role: 'user',
+          content: params.prompt
+        }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`API 请求失败：${response.status} ${text.slice(0, 260)}`);
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!response.body || !contentType.includes('text/event-stream')) {
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error('API 未返回可用内容。');
+    params.onDelta(content);
+    return content.trim();
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let fullText = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload) continue;
+      if (payload === '[DONE]') return fullText.trim();
+
+      try {
+        const data = JSON.parse(payload);
+        const choice = data?.choices?.[0];
+        const delta = choice?.delta?.content ?? choice?.message?.content ?? '';
+        if (delta) {
+          fullText += delta;
+          params.onDelta(delta);
+        }
+        if (choice?.finish_reason) return fullText.trim();
+      } catch {
+        // Ignore malformed keepalive chunks without interrupting the stream.
+      }
+    }
+  }
+
+  if (!fullText) throw new Error('API 未返回可用内容。');
+  return fullText.trim();
+}
+
 async function transcribeWithSiliconFlow(blob: Blob, apiKey: string) {
   const extension = blob.type.includes('mp4') ? 'mp4' : blob.type.includes('wav') ? 'wav' : 'webm';
   const form = new FormData();
@@ -376,6 +466,7 @@ export default function App() {
   const [status, setStatus] = useState('准备就绪');
   const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [activeDialog, setActiveDialog] = useState<DialogView>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -589,22 +680,35 @@ export default function App() {
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     setIsGenerating(true);
-    setStatus('正在调用大模型优化 prompt');
+    setGeneratedPrompt('');
+    setStatus('正在连接大模型');
+    let streamedText = '';
+    const timeoutId = window.setTimeout(() => abortRef.current?.abort(), 90000);
     try {
-      const result = await callOpenAiCompatible({
+      const result = await streamOpenAiCompatible({
         baseUrl,
         apiKey,
         model,
         prompt: draftRequest,
-        signal: abortRef.current.signal
+        signal: abortRef.current.signal,
+        onDelta: (delta) => {
+          streamedText += delta;
+          setGeneratedPrompt(streamedText);
+          setStatus(`正在生成：${streamedText.length} 字`);
+        }
       });
       setGeneratedPrompt(result);
       setStatus('AI 优化完成');
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError' && streamedText) {
+        setStatus('生成时间较长，已保留当前结果');
+        return;
+      }
       const message = error instanceof Error ? error.message : '未知错误';
       setGeneratedPrompt(buildLocalPrompt(rawInput, attachments, mode, extra));
       setStatus(`AI 调用失败，已回退到本地规则：${message}`);
     } finally {
+      window.clearTimeout(timeoutId);
       setIsGenerating(false);
     }
   }
@@ -629,128 +733,113 @@ export default function App() {
 
   return (
     <main className="app-shell">
-      <section className="hero">
+      <section className="hero compact-hero">
         <div className="hero-copy">
           <span className="eyebrow">
             <Sparkles size={16} />
             Voice2Prompt
           </span>
           <h1>语音转提示词工具</h1>
-          <p>面向学习、办公和创作场景，将语音需求、文字补充和附件信息整理为可执行的 AI Prompt。</p>
+          <p>录音、附件和文字需求集中输入，生成过程实时显示。</p>
+        </div>
+        <div className="hero-tools">
+          <button className="secondary-btn" type="button" onClick={() => setActiveDialog('settings')}>
+            <SlidersHorizontal size={17} />
+            设置
+          </button>
+          <button className="secondary-btn" type="button" onClick={() => setActiveDialog('help')}>
+            <HelpCircle size={17} />
+            帮助
+          </button>
         </div>
         <div className="status-strip">
           <span className={speechSupported ? 'dot ok' : 'dot warn'} />
-          {speechSupported ? `已配置云端 STT：${siliconFlowAsrModel}` : '当前浏览器不支持语音输入'}
+          {speechSupported ? `STT：${siliconFlowAsrModel}` : '当前浏览器不支持语音输入'}
           <span className="divider" />
           {status}
         </div>
       </section>
 
-      <section className="workspace">
-        <div className="left-rail">
-          <div className="panel voice-panel">
-            <div className="panel-title">
-              <Mic2 size={18} />
-              <h2>语音与需求</h2>
-            </div>
-
-            <div className="mic-actions">
-              <button className="secondary-btn" type="button" onClick={detectMicrophones}>
-                <Settings2 size={17} />
-                检测麦克风
-              </button>
-              <button
-                className={isListening ? 'danger-btn' : 'primary-btn'}
-                type="button"
-                onClick={isListening ? stopListening : startListening}
-              >
-                {isListening ? <Square size={17} /> : <Play size={17} />}
-                {isListening ? '停止录音' : '开始录音'}
-              </button>
-            </div>
-
-            <div className="mic-status">
-              <Mic size={16} />
-              <span>{micStatus}</span>
-            </div>
-
-            {microphones.length > 0 && (
-              <label className="field-label" htmlFor="microphone-select">
-                输入设备
-                <select
-                  id="microphone-select"
-                  value={selectedMicrophoneId}
-                  onChange={(event) => {
-                    setSelectedMicrophoneId(event.target.value);
-                    const selected = microphones.find((device) => device.deviceId === event.target.value);
-                    setMicStatus(`已选择：${selected?.label || '默认麦克风'}`);
-                  }}
-                >
-                  {microphones.map((device, index) => (
-                    <option key={device.deviceId || index} value={device.deviceId}>
-                      {device.label || `麦克风 ${index + 1}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-
-            <label className="field-label" htmlFor="transcript">
-              识别结果 / 手动补充
-            </label>
-            <textarea
-              id="transcript"
-              value={transcript}
-              onChange={(event) => setTranscript(event.target.value)}
-              placeholder="例如：请完成附件1中的作业，写成 Word 文档，要求有步骤和参考资料。"
-            />
-            {interimTranscript && <div className="interim">正在识别：{interimTranscript}</div>}
-
-            <label className="field-label" htmlFor="mode">
-              任务类型
-            </label>
-            <div className="mode-grid" id="mode">
-              {(Object.keys(modeLabels) as OutputMode[]).map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={mode === key ? 'mode-chip active' : 'mode-chip'}
-                  onClick={() => setMode(key)}
-                >
-                  {modeLabels[key]}
-                </button>
-              ))}
-            </div>
-
-            <label className="field-label" htmlFor="extra">
-              额外要求
-            </label>
-            <textarea
-              className="small-textarea"
-              id="extra"
-              value={extra}
-              onChange={(event) => setExtra(event.target.value)}
-            />
+      <section className="workspace focused-workspace">
+        <div className="panel voice-panel">
+          <div className="panel-title">
+            <Mic2 size={18} />
+            <h2>输入</h2>
           </div>
 
-          <div className="panel">
-            <div className="panel-title">
-              <Paperclip size={18} />
-              <h2>附件</h2>
-            </div>
-            <label className="upload-zone">
-              <input
-                type="file"
-                multiple
-                accept=".txt,.md,.pdf,.docx,.csv,.json,.html,.xml,.rtf,.log,image/*"
-                onChange={(event) => handleFiles(event.target.files)}
-              />
-              {attachmentBusy ? <Loader2 className="spin" size={22} /> : <FileText size={22} />}
-              <span>{attachmentBusy ? '正在解析附件' : '点击上传或拖入附件'}</span>
-              <small>支持 TXT、Markdown、CSV、JSON、PDF、DOCX；图片会作为附件说明加入 prompt。</small>
-            </label>
+          <div className="mic-actions">
+            <button className="secondary-btn" type="button" onClick={detectMicrophones}>
+              <Settings2 size={17} />
+              检测麦克风
+            </button>
+            <button className={isListening ? 'danger-btn' : 'primary-btn'} type="button" onClick={isListening ? stopListening : startListening}>
+              {isListening ? <Square size={17} /> : <Play size={17} />}
+              {isListening ? '停止录音' : '开始录音'}
+            </button>
+          </div>
 
-            <div className="attachment-list">
+          <div className="mic-status">
+            <Mic size={16} />
+            <span>{micStatus}</span>
+          </div>
+
+          {microphones.length > 0 && (
+            <label className="field-label" htmlFor="microphone-select">
+              输入设备
+              <select
+                id="microphone-select"
+                value={selectedMicrophoneId}
+                onChange={(event) => {
+                  setSelectedMicrophoneId(event.target.value);
+                  const selected = microphones.find((device) => device.deviceId === event.target.value);
+                  setMicStatus(`已选择：${selected?.label || '默认麦克风'}`);
+                }}
+              >
+                {microphones.map((device, index) => (
+                  <option key={device.deviceId || index} value={device.deviceId}>
+                    {device.label || `麦克风 ${index + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          <label className="field-label" htmlFor="transcript">
+            需求内容
+          </label>
+          <textarea
+            id="transcript"
+            value={transcript}
+            onChange={(event) => setTranscript(event.target.value)}
+            placeholder="说出或输入你的需求，例如：请根据附件完成课程作业，输出 Word 文档。"
+          />
+          {interimTranscript && <div className="interim">{interimTranscript}</div>}
+
+          <label className="field-label" htmlFor="mode-select">
+            任务类型
+            <select id="mode-select" value={mode} onChange={(event) => setMode(event.target.value as OutputMode)}>
+              {(Object.keys(modeLabels) as OutputMode[]).map((key) => (
+                <option key={key} value={key}>
+                  {modeLabels[key]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="upload-zone compact-upload">
+            <input
+              type="file"
+              multiple
+              accept=".txt,.md,.pdf,.docx,.csv,.json,.html,.xml,.rtf,.log,image/*"
+              onChange={(event) => handleFiles(event.target.files)}
+            />
+            {attachmentBusy ? <Loader2 className="spin" size={22} /> : <Paperclip size={22} />}
+            <span>{attachmentBusy ? '正在解析附件' : '添加附件'}</span>
+            <small>支持 PDF、DOCX、TXT、Markdown、CSV、JSON。</small>
+          </label>
+
+          {attachments.length > 0 && (
+            <div className="attachment-list compact-list">
               {attachments.map((file) => (
                 <div className="attachment-item" key={file.id}>
                   <div>
@@ -770,109 +859,120 @@ export default function App() {
                 </div>
               ))}
             </div>
-          </div>
+          )}
+
+          <button className="primary-btn generate-btn" type="button" onClick={() => generatePrompt(true)} disabled={isGenerating}>
+            {isGenerating ? <Loader2 className="spin" size={17} /> : <Wand2 size={17} />}
+            {isGenerating ? '正在生成' : '生成提示词'}
+          </button>
         </div>
 
-        <div className="right-rail">
-          <div className="panel api-panel">
+        <div className="panel output-panel">
+          <div className="output-head">
             <div className="panel-title">
-              <KeyRound size={18} />
-              <h2>AI 优化配置</h2>
+              <Bot size={18} />
+              <h2>结果</h2>
             </div>
-
-            <div className="provider-grid">
-              {providers.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={selectedProvider === item.id ? 'provider-card active' : 'provider-card'}
-                  onClick={() => updateProvider(item.id)}
-                >
-                  <strong>{item.name}</strong>
-                  <span>{item.note}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="settings-grid">
-              <label>
-                Base URL
-                <input
-                  value={baseUrl}
-                  disabled={selectedProvider !== 'custom'}
-                  onChange={(event) => setCustomBaseUrl(event.target.value)}
-                  placeholder="https://api.example.com/v1"
-                />
-              </label>
-              <label>
-                模型
-                <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="模型 ID" />
-              </label>
-              <label className="full">
-                API Key
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  placeholder="只保存在你的浏览器中；不要写入代码仓库"
-                />
-              </label>
-            </div>
-
-            <label className="remember-row">
-              <input type="checkbox" checked={rememberKey} onChange={(event) => setRememberKey(event.target.checked)} />
-              记住 API Key 到本机 localStorage
-            </label>
-
-            <div className="security-note">
-              <ShieldCheck size={17} />
-              已按要求内置 SiliconFlow API Key，并做轻量混淆；文本模型默认 {siliconFlowTextModel}，语音模型默认 {siliconFlowAsrModel}。
-            </div>
-          </div>
-
-          <div className="panel output-panel">
-            <div className="output-head">
-              <div className="panel-title">
-                <Bot size={18} />
-                <h2>生成结果</h2>
-              </div>
-              <div className="output-actions">
-                <button className="secondary-btn" type="button" onClick={() => generatePrompt(false)}>
-                  <RefreshCcw size={16} />
-                  本地生成
-                </button>
-                <button className="primary-btn" type="button" onClick={() => generatePrompt(true)} disabled={isGenerating}>
-                  {isGenerating ? <Loader2 className="spin" size={16} /> : <Wand2 size={16} />}
-                  AI 优化
-                </button>
-              </div>
-            </div>
-
-            <textarea
-              className="prompt-output"
-              value={generatedPrompt}
-              onChange={(event) => setGeneratedPrompt(event.target.value)}
-              placeholder="生成后的高质量 prompt 会显示在这里。"
-            />
-
-            <div className="result-toolbar">
+            <div className="result-toolbar inline-toolbar">
               <button className="secondary-btn" type="button" onClick={copyPrompt} disabled={!generatedPrompt}>
                 {copied ? <CheckCircle2 size={16} /> : <Copy size={16} />}
                 {copied ? '已复制' : '复制'}
               </button>
               <button className="secondary-btn" type="button" onClick={downloadPrompt} disabled={!generatedPrompt}>
                 <Download size={16} />
-                下载 Markdown
+                下载
               </button>
             </div>
+          </div>
 
-            <div className="status-box">
-              <AlertCircle size={16} />
-              <span>{status}</span>
-            </div>
+          <textarea
+            className="prompt-output"
+            value={generatedPrompt}
+            onChange={(event) => setGeneratedPrompt(event.target.value)}
+            placeholder="生成内容会实时出现在这里。"
+          />
+
+          <div className="status-box">
+            <AlertCircle size={16} />
+            <span>{status}</span>
           </div>
         </div>
       </section>
+
+      {activeDialog && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setActiveDialog(null)}>
+          <section className="modal-panel" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <div className="panel-title">
+                {activeDialog === 'settings' ? <KeyRound size={18} /> : <HelpCircle size={18} />}
+                <h2>{activeDialog === 'settings' ? '设置' : '使用方法'}</h2>
+              </div>
+              <button className="icon-btn" type="button" aria-label="关闭弹窗" onClick={() => setActiveDialog(null)}>
+                <X size={16} />
+              </button>
+            </div>
+
+            {activeDialog === 'settings' ? (
+              <>
+                <div className="provider-grid">
+                  {providers.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={selectedProvider === item.id ? 'provider-card active' : 'provider-card'}
+                      onClick={() => updateProvider(item.id)}
+                    >
+                      <strong>{item.name}</strong>
+                      <span>{item.note}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="settings-grid">
+                  <label>
+                    Base URL
+                    <input
+                      value={baseUrl}
+                      disabled={selectedProvider !== 'custom'}
+                      onChange={(event) => setCustomBaseUrl(event.target.value)}
+                      placeholder="https://api.example.com/v1"
+                    />
+                  </label>
+                  <label>
+                    模型
+                    <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="模型 ID" />
+                  </label>
+                  <label className="full">
+                    API Key
+                    <input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+                  </label>
+                  <label className="full">
+                    额外要求
+                    <textarea className="small-textarea" value={extra} onChange={(event) => setExtra(event.target.value)} />
+                  </label>
+                </div>
+
+                <label className="remember-row">
+                  <input type="checkbox" checked={rememberKey} onChange={(event) => setRememberKey(event.target.checked)} />
+                  记住 API Key 到本机 localStorage
+                </label>
+
+                <div className="security-note">
+                  <ShieldCheck size={17} />
+                  已内置 SiliconFlow Key；文本模型 {siliconFlowTextModel}，语音模型 {siliconFlowAsrModel}。
+                </div>
+              </>
+            ) : (
+              <div className="help-steps">
+                <p>1. 点击“检测麦克风”，选择要使用的输入设备。</p>
+                <p>2. 点击“开始录音”，说完后点击“停止录音”，转写结果会进入需求内容。</p>
+                <p>3. 可补充文字、选择任务类型，并按需添加附件。</p>
+                <p>4. 点击“生成提示词”，结果会边生成边显示；生成后可复制或下载。</p>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
     </main>
   );
 }
